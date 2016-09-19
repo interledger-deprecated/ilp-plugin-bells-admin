@@ -67,7 +67,6 @@ class FiveBellsLedger extends EventEmitter2 {
     }
 
     this.configPrefix = options.prefix
-    this.host = options.host || null
     this.credentials = {
       account: options.account,
       username: options.username,
@@ -80,9 +79,7 @@ class FiveBellsLedger extends EventEmitter2 {
 
     this.debugReplyNotifications = options.debugReplyNotifications || false
 
-    this.info = null
-    this.connection = null
-    this.connected = false
+    this.instance = options.instance
   }
 
   connect () {
@@ -92,10 +89,10 @@ class FiveBellsLedger extends EventEmitter2 {
   * _connect () {
     const accountUri = this.credentials.account
 
-    if (this.connection) {
-      debug('already connected, ignoring connection request')
-      return Promise.resolve(null)
-    }
+    // if (this.instance.ws) {
+    //   debug('already connected, ignoring connection request')
+    //   return Promise.resolve(null)
+    // }
 
     // Resolve account information
     const res = yield requestRetry({
@@ -107,7 +104,7 @@ class FiveBellsLedger extends EventEmitter2 {
     if (!res.body.ledger) {
       throw new Error('Failed to resolve ledger URI from account URI')
     }
-    this.host = res.body.ledger
+    this.instance.host = res.body.ledger
     // Set the username but don't overwrite the username in case it was provided
     if (!this.credentials.username) {
       this.credentials.username = res.body.name
@@ -130,24 +127,23 @@ class FiveBellsLedger extends EventEmitter2 {
 
     // Resolve ledger metadata
     const ledgerMetadata = yield this._fetchLedgerMetadata()
-    this.accountUriTemplate = ledgerMetadata.urls.account
+    this.instance.accountUriTemplate = ledgerMetadata.urls.account
 
     // Set ILP prefix
     const ledgerPrefix = ledgerMetadata.ilp_prefix
-    this.prefix = this.configPrefix || ledgerMetadata.ilp_prefix
+    this.instance.prefix = this.configPrefix || ledgerMetadata.ilp_prefix
 
     if (ledgerPrefix && this.configPrefix && ledgerPrefix !== this.configPrefix) {
       console.warn('ilp-plugin-bells: ledger prefix (' + ledgerPrefix +
         ') does not match locally configured prefix (' + this.configPrefix + ')')
     }
-    if (!this.prefix) {
+    if (!this.instance.prefix) {
       throw new Error('Unable to set prefix from ledger or from local config')
     }
 
-    const streamUri = accountUri.replace('http', 'ws') + '/transfers'
-    debug('subscribing to ' + streamUri)
+    const streamUri = accountUri.replace('http', 'ws').replace(/\/accounts\/[\w]*/, '/accounts/*') + '/transfers'
     const auth = this.credentials.password && this.credentials.username &&
-                   this.credentials.username + ':' + this.credentials.password
+      this.credentials.username + ':' + this.credentials.password
     const options = {
       headers: auth && {
         Authorization: 'Basic ' + new Buffer(auth, 'utf8').toString('base64')
@@ -162,69 +158,83 @@ class FiveBellsLedger extends EventEmitter2 {
     })
 
     return new Promise((resolve, reject) => {
-      this.connection = reconnect({immediate: true}, (ws) => {
-        ws.on('open', () => {
-          debug('ws connected to ' + streamUri)
-        })
-        ws.on('message', (msg) => {
-          const notification = JSON.parse(msg)
-          debug('notify transfer', notification.resource.state, notification.resource.id)
+      if (!this.instance.ws) {
+        this.instance.ws = reconnect({immediate: true})
+      }
 
-          co.wrap(this._handleNotification)
-            .call(this, notification.resource, notification.related_resources)
-            .then(() => {
-              if (this.debugReplyNotifications) {
-                ws.send(JSON.stringify({ result: 'processed' }))
-              }
-            })
-            .catch((err) => {
-              debug('failure while processing notification: ' +
+      const setupListeners = (ws) => {
+        ws.removeAllListeners()
+          .on('open', () => {
+            debug('ws connected to ' + streamUri)
+          })
+          .on('message', (msg) => {
+            const notification = JSON.parse(msg)
+            debug('notify transfer', notification.resource.state, notification.resource.id)
+
+            co.wrap(this._handleNotification)
+              .call(this, notification.resource, notification.related_resources)
+              .then(() => {
+                if (this.debugReplyNotifications) {
+                  ws.send(JSON.stringify({ result: 'processed' }))
+                }
+              })
+              .catch((err) => {
+                debug('failure while processing notification: ' +
                 (err && err.stack) ? err.stack : err)
-              if (this.debugReplyNotifications) {
-                ws.send(JSON.stringify({
-                  result: 'ignored',
-                  ignoreReason: {
-                    id: err.name,
-                    message: err.message
-                  }
-                }))
-              }
-            })
-        })
-        ws.on('close', () => {
-          debug('ws disconnected from ' + streamUri)
-        })
+                if (this.debugReplyNotifications) {
+                  ws.send(JSON.stringify({
+                    result: 'ignored',
+                    ignoreReason: {
+                      id: err.name,
+                      message: err.message
+                    }
+                  }))
+                }
+              })
+          })
+          .on('close', () => {
+            debug('ws disconnected from ' + streamUri)
+          })
 
         // reconnect-core expects the disconnect method to be called: `end`
         ws.end = ws.close
-      })
-      .once('connect', () => resolve(null))
-      .on('connect', () => {
-        this.connected = true
-        this.emit('connect')
-      })
-      .on('disconnect', () => {
-        this.connected = false
-        this.emit('disconnect')
-      })
-      .on('error', (err) => {
-        debug('ws error on ' + streamUri + ': ' + err)
-        reject(err)
-      })
-      .connect()
+      }
+
+      this.instance.ws.removeAllListeners()
+        .once('connect', () => {
+          setupListeners(this.instance.ws._connection)
+          resolve(null)
+        })
+        .on('connect', () => {
+          this.emit('connect')
+        })
+        .on('disconnect', () => {
+          this.emit('disconnect')
+        })
+        .on('error', (err) => {
+          debug('ws error on ' + streamUri + ': ' + err)
+          reject(err)
+        })
+
+      if (this.instance.ws.connected) {
+        setupListeners(this.instance.ws._connection)
+        return resolve(null)
+      }
+
+      debug('subscribing to ' + streamUri)
+      this.instance.ws.connect()
     })
   }
 
   disconnect () {
-    if (this.connection) {
-      this.connection.disconnect()
-      this.connection = null
-    }
+    this.instance.ws.removeAllListeners()
+    this.instance.ws._connection.removeAllListeners()
+
     return Promise.resolve(null)
   }
 
   isConnected () {
-    return this.connected
+    return this.instance.ws.connected
   }
 
   getInfo () {
@@ -232,28 +242,28 @@ class FiveBellsLedger extends EventEmitter2 {
   }
 
   * _getInfo () {
-    if (this.info) return this.info
+    if (this.instance.info) return this.instance.info
     const ledgerMetadata = yield this._fetchLedgerMetadata()
 
-    this.info = {
+    this.instance.info = {
       connectors: ledgerMetadata.connectors,
       precision: ledgerMetadata.precision,
       scale: ledgerMetadata.scale,
       currencyCode: ledgerMetadata.currency_code,
       currencySymbol: ledgerMetadata.currency_symbol
     }
-    return this.info
+    return this.instance.info
   }
 
   * _fetchLedgerMetadata () {
-    debug('request ledger metadata %s', this.host)
+    debug('request ledger metadata %s', this.instance.host)
     function throwErr () {
       throw new ExternalError('Unable to determine ledger precision')
     }
 
     let res
     try {
-      res = yield request(this.host, {json: true})
+      res = yield request(this.instance.host, {json: true})
     } catch (e) {
       if (!res || res.statusCode !== 200) {
         debug('getInfo error %s', e)
@@ -268,17 +278,17 @@ class FiveBellsLedger extends EventEmitter2 {
   }
 
   getPrefix () {
-    if (!this.prefix) {
+    if (!this.instance.prefix) {
       return Promise.reject(new Error('Prefix has not been set'))
     }
-    return Promise.resolve(this.prefix)
+    return Promise.resolve(this.instance.prefix)
   }
 
   getAccount () {
-    if (!this.connected) {
+    if (!this.instance.ws.connected) {
       return Promise.reject(new Error('Must be connected before getAccount can be called'))
     }
-    return Promise.resolve(this.prefix + this.accountUriToName(this.credentials.account))
+    return Promise.resolve(this.instance.prefix + this.accountUriToName(this.credentials.account))
   }
 
   _validateTransfer (transfer) {
@@ -312,8 +322,8 @@ class FiveBellsLedger extends EventEmitter2 {
   * _send (transfer) {
     const sourceAddress = yield this.parseAddress(transfer.account)
     const fiveBellsTransfer = omitUndefined({
-      id: this.host + '/transfers/' + transfer.id,
-      ledger: this.host,
+      id: this.instance.host + '/transfers/' + transfer.id,
+      ledger: this.instance.host,
       debits: [omitUndefined({
         account: this.credentials.account,
         amount: transfer.amount,
@@ -321,7 +331,7 @@ class FiveBellsLedger extends EventEmitter2 {
         memo: transfer.noteToSelf
       })],
       credits: [omitUndefined({
-        account: this.host + '/accounts/' + encodeURIComponent(sourceAddress.username),
+        account: this.instance.host + '/accounts/' + encodeURIComponent(sourceAddress.username),
         amount: transfer.amount,
         memo: transfer.data
       })],
@@ -367,7 +377,7 @@ class FiveBellsLedger extends EventEmitter2 {
   * _fulfillCondition (transferId, conditionFulfillment) {
     const fulfillmentRes = yield this._request({
       method: 'put',
-      uri: this.host + '/transfers/' + transferId + '/fulfillment',
+      uri: this.instance.host + '/transfers/' + transferId + '/fulfillment',
       body: conditionFulfillment,
       json: false
     })
@@ -393,7 +403,7 @@ class FiveBellsLedger extends EventEmitter2 {
     try {
       res = yield request(Object.assign({
         method: 'get',
-        uri: this.host + '/transfers/' + transferId + '/fulfillment',
+        uri: this.instance.host + '/transfers/' + transferId + '/fulfillment',
         json: true
       }, requestCredentials(this.credentials)))
     } catch (err) {
@@ -424,7 +434,7 @@ class FiveBellsLedger extends EventEmitter2 {
   * _rejectIncomingTransfer (transferId, rejectionMessage) {
     yield this._request({
       method: 'put',
-      uri: this.host + '/transfers/' + transferId + '/rejection',
+      uri: this.instance.host + '/transfers/' + transferId + '/rejection',
       body: rejectionMessage,
       json: false
     })
@@ -443,8 +453,8 @@ class FiveBellsLedger extends EventEmitter2 {
           id: fiveBellsTransfer.id.substring(fiveBellsTransfer.id.length - 36),
           direction: 'incoming',
           // TODO: What if there are multiple debits?
-          account: this.prefix + this.accountUriToName(fiveBellsTransfer.debits[0].account),
-          ledger: this.prefix,
+          account: this.instance.prefix + this.accountUriToName(fiveBellsTransfer.debits[0].account),
+          ledger: this.instance.prefix,
           amount: credit.amount,
           data: credit.memo,
           executionCondition: fiveBellsTransfer.execution_condition,
@@ -463,13 +473,13 @@ class FiveBellsLedger extends EventEmitter2 {
         }
 
         if (fiveBellsTransfer.state === 'executed' && relatedResources &&
-            relatedResources.execution_condition_fulfillment) {
+          relatedResources.execution_condition_fulfillment) {
           yield this.emitAsync('incoming_fulfill', transfer,
             relatedResources.execution_condition_fulfillment)
         }
 
         if (fiveBellsTransfer.state === 'rejected' && relatedResources &&
-            relatedResources.cancellation_condition_fulfillment) {
+          relatedResources.cancellation_condition_fulfillment) {
           yield this.emitAsync('incoming_cancel', transfer,
             relatedResources.cancellation_condition_fulfillment)
         } else if (fiveBellsTransfer.state === 'rejected') {
@@ -485,12 +495,11 @@ class FiveBellsLedger extends EventEmitter2 {
         // This connector only launches transfers with one credit, so there
         // should never be more than one credit.
         const credit = fiveBellsTransfer.credits[0]
-
         const transfer = omitUndefined({
           id: fiveBellsTransfer.id.substring(fiveBellsTransfer.id.length - 36),
           direction: 'outgoing',
-          account: this.prefix + this.accountUriToName(credit.account),
-          ledger: this.prefix,
+          account: this.instance.prefix + this.accountUriToName(credit.account),
+          ledger: this.instance.prefix,
           amount: debit.amount,
           data: credit.memo,
           noteToSelf: debit.memo,
@@ -510,13 +519,13 @@ class FiveBellsLedger extends EventEmitter2 {
         }
 
         if (fiveBellsTransfer.state === 'executed' && relatedResources &&
-            relatedResources.execution_condition_fulfillment) {
+          relatedResources.execution_condition_fulfillment) {
           yield this.emitAsync('outgoing_fulfill', transfer,
             relatedResources.execution_condition_fulfillment)
         }
 
         if (fiveBellsTransfer.state === 'rejected' && relatedResources &&
-            relatedResources.cancellation_condition_fulfillment) {
+          relatedResources.cancellation_condition_fulfillment) {
           yield this.emitAsync('outgoing_cancel', transfer,
             relatedResources.cancellation_condition_fulfillment)
         } else if (fiveBellsTransfer.state === 'rejected') {
@@ -553,7 +562,7 @@ class FiveBellsLedger extends EventEmitter2 {
   }
 
   accountNameToUri (name) {
-    return this.accountUriTemplate.replace(':name', name)
+    return this.instance.accountUriTemplate.replace(':name', name)
   }
 
   /**
@@ -561,7 +570,7 @@ class FiveBellsLedger extends EventEmitter2 {
    * accountUriTemplate is "http://red.example/accounts/:name").
    */
   accountUriToName (accountURI) {
-    const templatePath = parseURL(this.accountUriTemplate).path.split('/')
+    const templatePath = parseURL(this.instance.accountUriTemplate).path.split('/')
     const accountPath = parseURL(accountURI).path.split('/')
     for (let i = 0; i < templatePath.length; i++) {
       if (templatePath[i] === ':name') return accountPath[i]
@@ -577,7 +586,7 @@ class FiveBellsLedger extends EventEmitter2 {
         'with ledger prefix "' + prefix + '"')
     }
 
-    const addressParts = address.substr(this.prefix.length).split('.')
+    const addressParts = address.substr(this.instance.prefix.length).split('.')
     return {
       ledger: prefix,
       username: addressParts.slice(0, 1).join('.'),
