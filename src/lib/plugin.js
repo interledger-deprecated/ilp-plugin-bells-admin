@@ -163,8 +163,7 @@ class FiveBellsLedger extends EventEmitter2 {
       }
 
       const setupListeners = (ws) => {
-        ws.removeAllListeners()
-          .on('open', () => {
+        ws.on('open', () => {
             debug('ws connected to ' + streamUri)
           })
           .on('message', (msg) => {
@@ -200,7 +199,7 @@ class FiveBellsLedger extends EventEmitter2 {
         ws.end = ws.close
       }
 
-      this.instance.ws.removeAllListeners()
+      this.instance.ws
         .once('connect', () => {
           setupListeners(this.instance.ws._connection)
           resolve(null)
