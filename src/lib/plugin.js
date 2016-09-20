@@ -30,6 +30,7 @@ function * requestRetry (opts, errorMessage, credentials) {
   while (true) {
     debug('connecting to account ' + opts.uri)
     try {
+      // TODO cache
       let res = yield request(Object.assign(
         {json: true},
         requestCredentials(credentials),
@@ -80,6 +81,67 @@ class FiveBellsLedger extends EventEmitter2 {
     this.debugReplyNotifications = options.debugReplyNotifications || false
 
     this.instance = options.instance
+
+    this.setupListeners = this._setupListeners.bind(this)
+    this.onWsOpen = this._onWsOpen.bind(this)
+    this.onWsMessage = this._onWsMessage.bind(this)
+    this.onWsClose = this._onWsClose.bind(this)
+    this.onWsConnect = this._onWsConnect.bind(this)
+    this.onWsDisconnect = this._onWsDisconnect.bind(this)
+  }
+
+  _onWsOpen () {
+    debug('ws connected')
+  }
+
+  _onWsMessage (msg) {
+    const notification = JSON.parse(msg)
+    debug('notify transfer', notification.resource.state, notification.resource.id)
+
+    co.wrap(this._handleNotification)
+      .call(this, notification.resource, notification.related_resources)
+      .then(() => {
+        if (this.debugReplyNotifications) {
+          ws.send(JSON.stringify({ result: 'processed' }))
+        }
+      })
+      .catch((err) => {
+        debug('failure while processing notification: ' +
+        (err && err.stack) ? err.stack : err)
+        if (this.debugReplyNotifications) {
+          ws.send(JSON.stringify({
+            result: 'ignored',
+            ignoreReason: {
+              id: err.name,
+              message: err.message
+            }
+          }))
+        }
+      })
+  }
+
+  _onWsClose () {
+    debug('ws disconnected from ' + streamUri)
+  }
+
+  _onWsConnect () {
+    debug("%o", 'websocket: connected')
+    this.emit('connect')
+  }
+
+  _onWsDisconnect () {
+    debug("%o", 'websocket: disconnected')
+    this.disconnect()
+    this.emit('disconnect')
+  }
+
+  _setupListeners (ws) {
+    ws.on('open', this.onWsOpen)
+      .on('message', this.onWsMessage)
+      .on('close', this.onWsClose)
+
+    // reconnect-core expects the disconnect method to be called: `end`
+    ws.end = ws.close
   }
 
   connect () {
@@ -158,59 +220,17 @@ class FiveBellsLedger extends EventEmitter2 {
 
     return new Promise((resolve, reject) => {
       if (!this.instance.ws) {
+        debug('subscribing to ' + streamUri)
         this.instance.ws = reconnect({immediate: true})
-      }
-
-      const setupListeners = (ws) => {
-        ws.on('open', () => {
-            debug('ws connected to ' + streamUri)
-          })
-          .on('message', (msg) => {
-            const notification = JSON.parse(msg)
-            debug('notify transfer', notification.resource.state, notification.resource.id)
-
-            co.wrap(this._handleNotification)
-              .call(this, notification.resource, notification.related_resources)
-              .then(() => {
-                if (this.debugReplyNotifications) {
-                  ws.send(JSON.stringify({ result: 'processed' }))
-                }
-              })
-              .catch((err) => {
-                debug('failure while processing notification: ' +
-                (err && err.stack) ? err.stack : err)
-                if (this.debugReplyNotifications) {
-                  ws.send(JSON.stringify({
-                    result: 'ignored',
-                    ignoreReason: {
-                      id: err.name,
-                      message: err.message
-                    }
-                  }))
-                }
-              })
-          })
-          .on('close', () => {
-            debug('ws disconnected from ' + streamUri)
-          })
-
-        // reconnect-core expects the disconnect method to be called: `end`
-        ws.end = ws.close
       }
 
       this.instance.ws
         .once('connect', () => {
+          this.setupListeners(this.instance.ws._connection)
           resolve(null)
         })
-        .on('connect', () => {
-          debug("%o", 'websocket: connected')
-          setupListeners(this.instance.ws._connection)
-          this.emit('connect')
-        })
-        .on('disconnect', () => {
-          debug("%o", 'websocket: disconnected')
-          this.emit('disconnect')
-        })
+        .on('connect', this.onWsConnect)
+        .on('disconnect', this.onWsDisconnect)
         .on('error', (err) => {
           debug("%o", 'websocket: error', err)
           debug('ws error on ' + streamUri + ': ' + err)
@@ -218,18 +238,23 @@ class FiveBellsLedger extends EventEmitter2 {
         })
 
       if (this.instance.ws.connected) {
-        setupListeners(this.instance.ws._connection)
+        this.setupListeners(this.instance.ws._connection)
         return resolve(null)
       }
 
-      debug('subscribing to ' + streamUri)
       this.instance.ws.connect()
     })
   }
 
   disconnect () {
-    this.instance.ws.removeAllListeners()
-    this.instance.ws._connection.removeAllListeners()
+    this.instance.ws.removeListener('connect', this.onWsConnect)
+    this.instance.ws.removeListener('disconnect', this.onWsDisconnect)
+    // TODO leave at least one error handler
+    this.instance.ws.removeAllListeners('error')
+
+    this.instance.ws._connection.removeListener('open', this.onWsOpen)
+    this.instance.ws._connection.removeListener('message', this.onWsMessage)
+    this.instance.ws._connection.removeListener('close', this.onWsClose)
 
     return Promise.resolve(null)
   }
