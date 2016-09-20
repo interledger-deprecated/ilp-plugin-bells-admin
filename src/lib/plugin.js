@@ -5,7 +5,7 @@ const co = require('co')
 const request = require('co-request')
 const WebSocket = require('ws')
 const reconnectCore = require('reconnect-core')
-const debug = require('debug')('ilp-plugin-bells:plugin')
+const debug = require('debug')('ilp-plugin-bells-admin:plugin')
 const ExternalError = require('../errors/external-error')
 const UnrelatedNotificationError = require('../errors/unrelated-notification-error')
 const MissingFulfillmentError = require('../errors/missing-fulfillment-error')
@@ -153,9 +153,8 @@ class FiveBellsLedger extends EventEmitter2 {
       ca: this.credentials.ca
     }
 
-    const reconnect = reconnectCore(function () {
-      return new WebSocket(streamUri, omitUndefined(options))
-    })
+    const reconnect = reconnectCore(() =>
+      new WebSocket(streamUri, omitUndefined(options)))
 
     return new Promise((resolve, reject) => {
       if (!this.instance.ws) {
@@ -201,16 +200,19 @@ class FiveBellsLedger extends EventEmitter2 {
 
       this.instance.ws
         .once('connect', () => {
-          setupListeners(this.instance.ws._connection)
           resolve(null)
         })
         .on('connect', () => {
+          debug("%o", 'websocket: connected')
+          setupListeners(this.instance.ws._connection)
           this.emit('connect')
         })
         .on('disconnect', () => {
+          debug("%o", 'websocket: disconnected')
           this.emit('disconnect')
         })
         .on('error', (err) => {
+          debug("%o", 'websocket: error', err)
           debug('ws error on ' + streamUri + ': ' + err)
           reject(err)
         })
@@ -241,7 +243,6 @@ class FiveBellsLedger extends EventEmitter2 {
   }
 
   * _getInfo () {
-    if (this.instance.info) return this.instance.info
     const ledgerMetadata = yield this._fetchLedgerMetadata()
 
     this.instance.info = {
@@ -255,6 +256,8 @@ class FiveBellsLedger extends EventEmitter2 {
   }
 
   * _fetchLedgerMetadata () {
+    if (this.instance.ledgerMetadata) return this.instance.ledgerMetadata
+
     debug('request ledger metadata %s', this.instance.host)
     function throwErr () {
       throw new ExternalError('Unable to determine ledger precision')
@@ -272,6 +275,8 @@ class FiveBellsLedger extends EventEmitter2 {
 
     if (!res || res.statusCode !== 200) throwErr()
     if (!res.body.precision || !res.body.scale) throwErr()
+
+    this.instance.ledgerMetadata = res.body
 
     return res.body
   }
