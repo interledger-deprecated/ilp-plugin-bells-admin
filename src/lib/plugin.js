@@ -82,7 +82,6 @@ class FiveBellsLedger extends EventEmitter2 {
 
     this.instance = options.instance
 
-    this.setupListeners = this._setupListeners.bind(this)
     this.onWsMessage = this._onWsMessage.bind(this)
     this.onWsConnect = this._onWsConnect.bind(this)
     this.onWsDisconnect = this._onWsDisconnect.bind(this)
@@ -123,10 +122,6 @@ class FiveBellsLedger extends EventEmitter2 {
     debug("%o", 'websocket: disconnected')
     this.disconnect()
     this.emit('disconnect')
-  }
-
-  _setupListeners (ws) {
-    ws.on('message', this.onWsMessage)
   }
 
   connect () {
@@ -208,7 +203,7 @@ class FiveBellsLedger extends EventEmitter2 {
         debug('subscribing to ' + streamUri)
         this.instance.ws = reconnect({immediate: true})
         this.instance.ws.once('connect', () => {
-          this.setupListeners(this.instance.ws._connection)
+          this.instance.ws._connection.on('message', this.onWsMessage)
           resolve(null)
         })
       }
@@ -223,7 +218,7 @@ class FiveBellsLedger extends EventEmitter2 {
         })
 
       if (this.instance.ws.connected) {
-        this.setupListeners(this.instance.ws._connection)
+        this.instance.ws._connection.on('message', this.onWsMessage)
         return resolve(null)
       }
 
