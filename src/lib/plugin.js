@@ -83,15 +83,9 @@ class FiveBellsLedger extends EventEmitter2 {
     this.instance = options.instance
 
     this.setupListeners = this._setupListeners.bind(this)
-    this.onWsOpen = this._onWsOpen.bind(this)
     this.onWsMessage = this._onWsMessage.bind(this)
-    this.onWsClose = this._onWsClose.bind(this)
     this.onWsConnect = this._onWsConnect.bind(this)
     this.onWsDisconnect = this._onWsDisconnect.bind(this)
-  }
-
-  _onWsOpen () {
-    debug('ws connected')
   }
 
   _onWsMessage (msg) {
@@ -120,10 +114,6 @@ class FiveBellsLedger extends EventEmitter2 {
       })
   }
 
-  _onWsClose () {
-    debug('ws disconnected from ' + streamUri)
-  }
-
   _onWsConnect () {
     debug("%o", 'websocket: connected')
     this.emit('connect')
@@ -136,12 +126,7 @@ class FiveBellsLedger extends EventEmitter2 {
   }
 
   _setupListeners (ws) {
-    ws.on('open', this.onWsOpen)
-      .on('message', this.onWsMessage)
-      .on('close', this.onWsClose)
-
-    // reconnect-core expects the disconnect method to be called: `end`
-    ws.end = ws.close
+    ws.on('message', this.onWsMessage)
   }
 
   connect () {
@@ -222,13 +207,13 @@ class FiveBellsLedger extends EventEmitter2 {
       if (!this.instance.ws) {
         debug('subscribing to ' + streamUri)
         this.instance.ws = reconnect({immediate: true})
-      }
-
-      this.instance.ws
-        .once('connect', () => {
+        this.instance.ws.once('connect', () => {
           this.setupListeners(this.instance.ws._connection)
           resolve(null)
         })
+      }
+
+      this.instance.ws
         .on('connect', this.onWsConnect)
         .on('disconnect', this.onWsDisconnect)
         .on('error', (err) => {
@@ -251,10 +236,7 @@ class FiveBellsLedger extends EventEmitter2 {
     this.instance.ws.removeListener('disconnect', this.onWsDisconnect)
     // TODO leave at least one error handler
     this.instance.ws.removeAllListeners('error')
-
-    this.instance.ws._connection.removeListener('open', this.onWsOpen)
     this.instance.ws._connection.removeListener('message', this.onWsMessage)
-    this.instance.ws._connection.removeListener('close', this.onWsClose)
 
     return Promise.resolve(null)
   }
