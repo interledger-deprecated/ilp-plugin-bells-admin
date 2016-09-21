@@ -50,7 +50,7 @@ function * requestRetry (opts, errorMessage, credentials) {
   throw new Error(errorMessage)
 }
 
-class FiveBellsLedger extends EventEmitter2 {
+class FiveBellsLedgerAdmin extends EventEmitter2 {
   constructor (options) {
     super()
 
@@ -85,6 +85,8 @@ class FiveBellsLedger extends EventEmitter2 {
     this.onWsMessage = this._onWsMessage.bind(this)
     this.onWsConnect = this._onWsConnect.bind(this)
     this.onWsDisconnect = this._onWsDisconnect.bind(this)
+
+    this.listenersAdded = false
   }
 
   _onWsMessage (msg) {
@@ -131,10 +133,10 @@ class FiveBellsLedger extends EventEmitter2 {
   * _connect () {
     const accountUri = this.credentials.account
 
-    // if (this.instance.ws) {
-    //   debug('already connected, ignoring connection request')
-    //   return Promise.resolve(null)
-    // }
+    if (this.listenersAdded) {
+      debug('already connected, ignoring connection request')
+      return Promise.resolve(null)
+    }
 
     // Resolve account information
     const res = yield requestRetry({
@@ -197,6 +199,8 @@ class FiveBellsLedger extends EventEmitter2 {
 
     const reconnect = reconnectCore(() =>
       new WebSocket(streamUri, omitUndefined(options)))
+
+    this.listenersAdded = true
 
     return new Promise((resolve, reject) => {
       if (!this.instance.ws) {
@@ -613,4 +617,4 @@ function requestCredentials (credentials) {
   })
 }
 
-module.exports = FiveBellsLedger
+module.exports = FiveBellsLedgerAdmin
