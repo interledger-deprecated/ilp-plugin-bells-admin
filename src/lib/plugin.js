@@ -80,7 +80,7 @@ class FiveBellsLedgerAdmin extends EventEmitter2 {
 
     this.debugReplyNotifications = options.debugReplyNotifications || false
 
-    this.instance = options.instance
+    this.instance = options.instance || {ws: null}
 
     this.onWsMessage = this._onWsMessage.bind(this)
     this.onWsConnect = this._onWsConnect.bind(this)
@@ -236,6 +236,8 @@ class FiveBellsLedgerAdmin extends EventEmitter2 {
     // TODO leave at least one error handler
     this.instance.ws.removeAllListeners('error')
     this.instance.ws._connection.removeListener('message', this.onWsMessage)
+
+    this.listenersAdded = false
 
     return Promise.resolve(null)
   }
