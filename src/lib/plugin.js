@@ -127,7 +127,16 @@ class FiveBellsLedgerAdmin extends EventEmitter2 {
   }
 
   connect () {
-    return co(this._connect.bind(this))
+    if (this.connecting) {
+      return this.connecting
+    }
+
+    this.connecting = co(this._connect.bind(this))
+    this.connecting.then(() => {
+      this.connecting = false
+    })
+
+    return this.connecting
   }
 
   * _connect () {
