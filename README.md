@@ -1,6 +1,6 @@
 # ilp-plugin-bells
 
-> ILP ledger plugin for [five-bells-ledger](https://github.com/interledger/five-bells-ledger)
+> ILP ledger plugin for [five-bells-ledger](https://github.com/interledgerjs/five-bells-ledger)
 
 ## Installation
 
